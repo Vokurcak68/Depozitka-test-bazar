@@ -251,6 +251,61 @@ function App() {
     addEmailLog(tx.id, 'tx_created_admin', 'admin@depozitka.cz', `[${tx.id}] Nová transakce`)
   }
 
+  function seedAllStatuses() {
+    const listing = listings[0]
+    const seller = users.find((u) => u.id === listing.sellerId)
+    if (!seller) return
+
+    const statuses: EscrowStatus[] = [
+      'created',
+      'partial_paid',
+      'paid',
+      'shipped',
+      'delivered',
+      'completed',
+      'auto_completed',
+      'disputed',
+      'hold',
+      'refunded',
+      'cancelled',
+      'payout_sent',
+      'payout_confirmed',
+    ]
+
+    const seeded = statuses.map((status, index) => {
+      const amount = 1000 + index * 100
+      const feeAmount = Math.max(15, Math.round(amount * 0.05))
+      return {
+        id: `ESC-${new Date().getFullYear()}-${Math.floor(1000 + Math.random() * 9000)}`,
+        listingId: listing.id,
+        buyerName: `Test kupující ${index + 1}`,
+        buyerEmail: `buyer${index + 1}@test.cz`,
+        sellerId: seller.id,
+        sellerEmail: seller.email,
+        amount,
+        feePercent: 5,
+        feeAmount,
+        payoutAmount: amount - feeAmount,
+        status,
+        disputeReason: status === 'disputed' ? 'Testovací spor' : undefined,
+        holdReason: status === 'hold' ? 'Testovací hold' : undefined,
+        createdAt: now(),
+        updatedAt: now(),
+      } satisfies Transaction
+    })
+
+    setTransactions((prev) => [...seeded, ...prev])
+  }
+
+  function clearAllTransactions() {
+    if (!confirm('Smazat všechny test transakce, eventy i email logy?')) return
+    setTransactions([])
+    setEvents([])
+    setEmailLogs([])
+    setStatusChange({})
+    setStatusNote({})
+  }
+
   function applyStatusChange(transactionId: string) {
     const targetStatus = statusChange[transactionId]
     if (!targetStatus) return
@@ -399,9 +454,45 @@ function App() {
         </section>
       )}
 
+
       {tab === 'admin' && (
         <section className="panel">
+          <div className="adminTopActions">
+            <button className="primary" onClick={seedAllStatuses}>Seed všech stavů</button>
+            <button className="ghost" onClick={clearAllTransactions}>Reset test dat</button>
+          </div>
+
           <h2>Admin rozhraní</h2>
+
+          <h3>Všechny transakce ({transactions.length})</h3>
+          <div className="tableWrap">
+            <table>
+              <thead>
+                <tr>
+                  <th>ID</th>
+                  <th>Stav</th>
+                  <th>Kupující</th>
+                  <th>Prodávající</th>
+                  <th>Částka</th>
+                  <th>Aktualizace</th>
+                </tr>
+              </thead>
+              <tbody>
+                {transactions.map((tx) => (
+                  <tr key={`all-${tx.id}`}>
+                    <td>{tx.id}</td>
+                    <td>
+                      <span className={`status ${tx.status}`}>{statusLabel[tx.status]}</span>
+                    </td>
+                    <td>{tx.buyerEmail}</td>
+                    <td>{tx.sellerEmail}</td>
+                    <td>{formatPrice(tx.amount)}</td>
+                    <td>{tx.updatedAt}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
 
           <div className="groupWrap">
             <div className="group">
