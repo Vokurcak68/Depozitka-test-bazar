@@ -1,136 +1,53 @@
 import { useMemo, useState } from 'react'
 import './App.css'
 
-type Role = 'buyer' | 'seller' | 'admin'
 type PaymentMethod = 'Escrow' | 'Převod' | 'Dobírka'
-type EscrowStatus =
-  | 'created'
-  | 'partial_paid'
-  | 'paid'
-  | 'shipped'
-  | 'delivered'
-  | 'completed'
-  | 'auto_completed'
-  | 'disputed'
-  | 'hold'
-  | 'refunded'
-  | 'cancelled'
-  | 'payout_sent'
-  | 'payout_confirmed'
-
-interface User {
-  id: string
-  name: string
-  email: string
-  role: Role
-}
+type TxStatus = 'created' | 'paid' | 'shipped' | 'delivered' | 'completed' | 'disputed'
 
 interface Listing {
   id: string
   title: string
   price: number
-  sellerId: string
+  sellerName: string
+  sellerEmail: string
   paymentMethods: PaymentMethod[]
 }
 
-interface Transaction {
+interface MarketplaceTx {
   id: string
   listingId: string
   buyerName: string
   buyerEmail: string
-  sellerId: string
   sellerEmail: string
   amount: number
-  feePercent: number
-  feeAmount: number
-  payoutAmount: number
-  status: EscrowStatus
-  holdReason?: string
-  disputeReason?: string
-  createdAt: string
-  updatedAt: string
-}
-
-interface EscrowEvent {
-  id: string
-  transactionId: string
-  actorRole: Role
-  actorEmail: string
-  action: string
-  oldStatus: EscrowStatus | '-'
-  newStatus: EscrowStatus
-  note?: string
+  status: TxStatus
+  depozitkaTxId?: string
   createdAt: string
 }
-
-interface EmailLog {
-  id: string
-  transactionId: string
-  templateKey: string
-  toEmail: string
-  subject: string
-  status: 'queued' | 'sent'
-  createdAt: string
-}
-
-const statusLabel: Record<EscrowStatus, string> = {
-  created: 'Vytvořeno',
-  partial_paid: 'Částečně zaplaceno',
-  paid: 'Zaplaceno',
-  shipped: 'Odesláno',
-  delivered: 'Doručeno',
-  completed: 'Dokončeno',
-  auto_completed: 'Auto dokončeno',
-  disputed: 'Spor',
-  hold: 'Hold',
-  refunded: 'Refundováno',
-  cancelled: 'Zrušeno',
-  payout_sent: 'Výplata odeslána',
-  payout_confirmed: 'Výplata potvrzena',
-}
-
-const allowedTransitions: Record<EscrowStatus, EscrowStatus[]> = {
-  created: ['partial_paid', 'paid', 'cancelled'],
-  partial_paid: ['paid', 'cancelled'],
-  paid: ['shipped', 'disputed', 'hold', 'refunded'],
-  shipped: ['delivered', 'disputed', 'hold'],
-  delivered: ['completed', 'auto_completed', 'disputed', 'hold'],
-  disputed: ['hold', 'refunded', 'payout_sent', 'cancelled'],
-  hold: ['disputed', 'refunded', 'payout_sent', 'cancelled'],
-  payout_sent: ['payout_confirmed'],
-  completed: [],
-  auto_completed: [],
-  refunded: [],
-  cancelled: [],
-  payout_confirmed: [],
-}
-
-const usersSeed: User[] = [
-  { id: 'u-admin', name: 'Depozitka Admin', email: 'admin@depozitka.cz', role: 'admin' },
-  { id: 'u-seller-1', name: 'Kolejmaster', email: 'seller1@test.cz', role: 'seller' },
-  { id: 'u-seller-2', name: 'LokoTom', email: 'seller2@test.cz', role: 'seller' },
-]
 
 const listingsSeed: Listing[] = [
   {
     id: 'l-1001',
     title: 'Tillig 74806 – nákladní vůz H0',
     price: 890,
-    sellerId: 'u-seller-1',
+    sellerName: 'Kolejmaster',
+    sellerEmail: 'seller1@test.cz',
     paymentMethods: ['Escrow', 'Převod'],
   },
   {
     id: 'l-1002',
     title: 'Piko SmartControl set + trafo',
     price: 3490,
-    sellerId: 'u-seller-2',
+    sellerName: 'LokoTom',
+    sellerEmail: 'seller2@test.cz',
     paymentMethods: ['Escrow', 'Dobírka'],
   },
   {
     id: 'l-1003',
     title: 'Modelová budova nádraží',
     price: 1250,
-    sellerId: 'u-seller-1',
+    sellerName: 'ModelKing',
+    sellerEmail: 'seller3@test.cz',
     paymentMethods: ['Převod', 'Dobírka'],
   },
 ]
@@ -143,527 +60,161 @@ function formatPrice(value: number) {
   return `${new Intl.NumberFormat('cs-CZ').format(value)} Kč`
 }
 
-function App() {
-  const [tab, setTab] = useState<'market' | 'admin' | 'emails'>('market')
-  const [users] = useState<User[]>(usersSeed)
-  const [listings] = useState<Listing[]>(listingsSeed)
-  const [transactions, setTransactions] = useState<Transaction[]>([])
-  const [events, setEvents] = useState<EscrowEvent[]>([])
-  const [emailLogs, setEmailLogs] = useState<EmailLog[]>([])
+function fakeDepozitkaCreate(payload: {
+  buyerEmail: string
+  sellerEmail: string
+  amount: number
+}) {
+  return {
+    depozitkaTxId: `DPT-${new Date().getFullYear()}-${Math.floor(100000 + Math.random() * 900000)}`,
+    status: 'created' as TxStatus,
+    acceptedAt: now(),
+    payload,
+  }
+}
 
+function App() {
+  const [listings] = useState(listingsSeed)
   const [buyerName, setBuyerName] = useState('Testující kupující')
   const [buyerEmail, setBuyerEmail] = useState('buyer@test.cz')
   const [selectedListingId, setSelectedListingId] = useState(listingsSeed[0].id)
 
-  const [statusChange, setStatusChange] = useState<Record<string, EscrowStatus | ''>>({})
-  const [statusNote, setStatusNote] = useState<Record<string, string>>({})
+  const [orders, setOrders] = useState<MarketplaceTx[]>([])
+  const [connectorLogs, setConnectorLogs] = useState<string[]>([])
 
   const selectedListing = listings.find((l) => l.id === selectedListingId)
 
-  const listingsWithSeller = useMemo(
-    () =>
-      listings.map((listing) => ({
-        ...listing,
-        seller: users.find((u) => u.id === listing.sellerId),
-      })),
-    [listings, users],
+  const escrowListings = useMemo(
+    () => listings.filter((l) => l.paymentMethods.includes('Escrow')),
+    [listings],
   )
 
-  function addEmailLog(transactionId: string, templateKey: string, toEmail: string, subject: string) {
-    const log: EmailLog = {
-      id: `mail-${crypto.randomUUID().slice(0, 8)}`,
-      transactionId,
-      templateKey,
-      toEmail,
-      subject,
-      status: 'sent',
-      createdAt: now(),
-    }
-    setEmailLogs((prev) => [log, ...prev])
-  }
-
-  function addEvent(
-    transactionId: string,
-    actorRole: Role,
-    actorEmail: string,
-    action: string,
-    oldStatus: EscrowStatus | '-',
-    newStatus: EscrowStatus,
-    note?: string,
-  ) {
-    const event: EscrowEvent = {
-      id: `ev-${crypto.randomUUID().slice(0, 8)}`,
-      transactionId,
-      actorRole,
-      actorEmail,
-      action,
-      oldStatus,
-      newStatus,
-      note,
-      createdAt: now(),
-    }
-    setEvents((prev) => [event, ...prev])
-  }
-
-  function createTransaction() {
+  function createOrderWithEscrow() {
     if (!selectedListing) return
     if (!selectedListing.paymentMethods.includes('Escrow')) {
-      alert('Vybraný inzerát nepodporuje Escrow')
+      alert('Tenhle inzerát nemá Escrow')
       return
     }
-
     if (!buyerName.trim() || !buyerEmail.trim()) {
-      alert('Kupující musí mít jméno i email')
+      alert('Vyplň jméno a email kupujícího')
       return
     }
 
-    const seller = users.find((u) => u.id === selectedListing.sellerId)
-    if (!seller?.email) {
-      alert('Prodejce musí mít email')
-      return
-    }
+    const depozitkaResponse = fakeDepozitkaCreate({
+      buyerEmail: buyerEmail.trim(),
+      sellerEmail: selectedListing.sellerEmail,
+      amount: selectedListing.price,
+    })
 
-    const feePercent = 5
-    const feeAmount = Math.max(15, Math.round(selectedListing.price * (feePercent / 100)))
-    const payoutAmount = selectedListing.price - feeAmount
-
-    const tx: Transaction = {
-      id: `ESC-${new Date().getFullYear()}-${Math.floor(1000 + Math.random() * 9000)}`,
+    const order: MarketplaceTx = {
+      id: `ORD-${new Date().getFullYear()}-${Math.floor(1000 + Math.random() * 9000)}`,
       listingId: selectedListing.id,
       buyerName: buyerName.trim(),
       buyerEmail: buyerEmail.trim(),
-      sellerId: seller.id,
-      sellerEmail: seller.email,
+      sellerEmail: selectedListing.sellerEmail,
       amount: selectedListing.price,
-      feePercent,
-      feeAmount,
-      payoutAmount,
       status: 'created',
+      depozitkaTxId: depozitkaResponse.depozitkaTxId,
       createdAt: now(),
-      updatedAt: now(),
     }
 
-    setTransactions((prev) => [tx, ...prev])
-
-    addEvent(tx.id, 'buyer', tx.buyerEmail, 'transaction_created', '-', 'created')
-    addEmailLog(tx.id, 'tx_created_buyer', tx.buyerEmail, `[${tx.id}] Transakce vytvořena`)
-    addEmailLog(tx.id, 'tx_created_seller', tx.sellerEmail, `[${tx.id}] Nová escrow transakce`)
-    addEmailLog(tx.id, 'tx_created_admin', 'admin@depozitka.cz', `[${tx.id}] Nová transakce`)
+    setOrders((prev) => [order, ...prev])
+    setConnectorLogs((prev) => [
+      `[${depozitkaResponse.acceptedAt}] POST /depozitka/transactions -> ${depozitkaResponse.depozitkaTxId} (buyer=${buyerEmail.trim()}, seller=${selectedListing.sellerEmail}, amount=${selectedListing.price})`,
+      ...prev,
+    ])
   }
-
-  function seedAllStatuses() {
-    const listing = listings[0]
-    const seller = users.find((u) => u.id === listing.sellerId)
-    if (!seller) return
-
-    const statuses: EscrowStatus[] = [
-      'created',
-      'partial_paid',
-      'paid',
-      'shipped',
-      'delivered',
-      'completed',
-      'auto_completed',
-      'disputed',
-      'hold',
-      'refunded',
-      'cancelled',
-      'payout_sent',
-      'payout_confirmed',
-    ]
-
-    const seeded = statuses.map((status, index) => {
-      const amount = 1000 + index * 100
-      const feeAmount = Math.max(15, Math.round(amount * 0.05))
-      return {
-        id: `ESC-${new Date().getFullYear()}-${Math.floor(1000 + Math.random() * 9000)}`,
-        listingId: listing.id,
-        buyerName: `Test kupující ${index + 1}`,
-        buyerEmail: `buyer${index + 1}@test.cz`,
-        sellerId: seller.id,
-        sellerEmail: seller.email,
-        amount,
-        feePercent: 5,
-        feeAmount,
-        payoutAmount: amount - feeAmount,
-        status,
-        disputeReason: status === 'disputed' ? 'Testovací spor' : undefined,
-        holdReason: status === 'hold' ? 'Testovací hold' : undefined,
-        createdAt: now(),
-        updatedAt: now(),
-      } satisfies Transaction
-    })
-
-    setTransactions((prev) => [...seeded, ...prev])
-  }
-
-  function clearAllTransactions() {
-    if (!confirm('Smazat všechny test transakce, eventy i email logy?')) return
-    setTransactions([])
-    setEvents([])
-    setEmailLogs([])
-    setStatusChange({})
-    setStatusNote({})
-  }
-
-  function applyStatusChange(transactionId: string) {
-    const targetStatus = statusChange[transactionId]
-    if (!targetStatus) return
-
-    setTransactions((prev) =>
-      prev.map((tx) => {
-        if (tx.id !== transactionId) return tx
-
-        if (!allowedTransitions[tx.status].includes(targetStatus)) {
-          alert(`Přechod ${tx.status} -> ${targetStatus} není povolený`)
-          return tx
-        }
-
-        const note = (statusNote[transactionId] || '').trim()
-
-        if (targetStatus === 'hold' && !note) {
-          alert('Pro stav HOLD zadej důvod')
-          return tx
-        }
-
-        if (targetStatus === 'disputed' && !note) {
-          alert('Pro stav SPOR zadej důvod')
-          return tx
-        }
-
-        const updated: Transaction = {
-          ...tx,
-          status: targetStatus,
-          holdReason: targetStatus === 'hold' ? note : tx.holdReason,
-          disputeReason: targetStatus === 'disputed' ? note : tx.disputeReason,
-          updatedAt: now(),
-        }
-
-        addEvent(transactionId, 'admin', 'admin@depozitka.cz', 'status_changed', tx.status, targetStatus, note)
-
-        // email trigger body (phase 1)
-        if (targetStatus === 'paid') {
-          addEmailLog(tx.id, 'payment_received_buyer', tx.buyerEmail, `[${tx.id}] Platba přijata`)
-          addEmailLog(tx.id, 'payment_received_seller', tx.sellerEmail, `[${tx.id}] Kupující zaplatil`)
-        }
-        if (targetStatus === 'shipped') {
-          addEmailLog(tx.id, 'shipped_buyer', tx.buyerEmail, `[${tx.id}] Zboží odesláno`)
-        }
-        if (targetStatus === 'delivered') {
-          addEmailLog(tx.id, 'delivered_buyer', tx.buyerEmail, `[${tx.id}] Zboží doručeno`)
-          addEmailLog(tx.id, 'delivered_seller', tx.sellerEmail, `[${tx.id}] Zboží doručeno`)
-        }
-        if (targetStatus === 'completed' || targetStatus === 'auto_completed') {
-          addEmailLog(tx.id, 'completed_buyer', tx.buyerEmail, `[${tx.id}] Transakce dokončena`)
-          addEmailLog(tx.id, 'completed_seller', tx.sellerEmail, `[${tx.id}] Transakce dokončena`)
-        }
-        if (targetStatus === 'disputed') {
-          addEmailLog(tx.id, 'dispute_opened_buyer', tx.buyerEmail, `[${tx.id}] Otevřen spor`)
-          addEmailLog(tx.id, 'dispute_opened_seller', tx.sellerEmail, `[${tx.id}] Otevřen spor`)
-          addEmailLog(tx.id, 'dispute_opened_admin', 'admin@depozitka.cz', `[${tx.id}] Nový spor`)
-        }
-        if (targetStatus === 'hold') {
-          addEmailLog(tx.id, 'hold_set_buyer', tx.buyerEmail, `[${tx.id}] Transakce na hold`)
-          addEmailLog(tx.id, 'hold_set_seller', tx.sellerEmail, `[${tx.id}] Transakce na hold`)
-        }
-        if (targetStatus === 'refunded') {
-          addEmailLog(tx.id, 'refunded_buyer', tx.buyerEmail, `[${tx.id}] Vrácení platby`)
-          addEmailLog(tx.id, 'refunded_seller', tx.sellerEmail, `[${tx.id}] Vrácení platby kupujícímu`)
-        }
-        if (targetStatus === 'payout_sent' || targetStatus === 'payout_confirmed') {
-          addEmailLog(tx.id, 'payout_seller', tx.sellerEmail, `[${tx.id}] Výplata prodávajícímu`)
-          addEmailLog(tx.id, 'payout_admin', 'admin@depozitka.cz', `[${tx.id}] Výplata zpracována`)
-        }
-
-        return updated
-      }),
-    )
-
-    setStatusChange((prev) => ({ ...prev, [transactionId]: '' }))
-    setStatusNote((prev) => ({ ...prev, [transactionId]: '' }))
-  }
-
-  const groups = useMemo(
-    () => ({
-      resolve: transactions.filter((t) => ['disputed', 'hold'].includes(t.status)),
-      processing: transactions.filter((t) => ['created', 'partial_paid', 'paid', 'shipped', 'delivered'].includes(t.status)),
-      closed: transactions.filter((t) =>
-        ['completed', 'auto_completed', 'refunded', 'cancelled', 'payout_sent', 'payout_confirmed'].includes(t.status),
-      ),
-    }),
-    [transactions],
-  )
 
   return (
     <div className="app">
       <header className="topbar">
-        <h1>Depozitka · Fáze 1 (core test)</h1>
-        <p>Data model + status engine + admin workflow + email logy (sandbox).</p>
+        <h1>Test bazar (oddělený klient)</h1>
+        <p>
+          Tohle je jen marketplace klient. Depozitka admin + stavy běží samostatně v projektu
+          <strong> depozitka-core</strong>.
+        </p>
       </header>
 
-      <nav className="tabs">
-        <button className={tab === 'market' ? 'active' : ''} onClick={() => setTab('market')}>
-          Test bazar
-        </button>
-        <button className={tab === 'admin' ? 'active' : ''} onClick={() => setTab('admin')}>
-          Admin escrow
-        </button>
-        <button className={tab === 'emails' ? 'active' : ''} onClick={() => setTab('emails')}>
-          Email logy
-        </button>
-      </nav>
+      <section className="panel">
+        <h2>Vytvoření objednávky s Escrow</h2>
 
-      {tab === 'market' && (
-        <section className="panel">
-          <h2>Vytvořit transakci</h2>
-          <div className="formGrid">
-            <label>
-              Kupující (jméno)
-              <input value={buyerName} onChange={(e) => setBuyerName(e.target.value)} />
-            </label>
-            <label>
-              Kupující (email)
-              <input value={buyerEmail} onChange={(e) => setBuyerEmail(e.target.value)} type="email" />
-            </label>
-          </div>
+        <div className="formGrid">
+          <label>
+            Kupující (jméno)
+            <input value={buyerName} onChange={(e) => setBuyerName(e.target.value)} />
+          </label>
+          <label>
+            Kupující (email)
+            <input type="email" value={buyerEmail} onChange={(e) => setBuyerEmail(e.target.value)} />
+          </label>
+        </div>
 
-          <div className="listings">
-            {listingsWithSeller.map((listing) => (
-              <article
-                key={listing.id}
-                className={`listing ${selectedListingId === listing.id ? 'active' : ''}`}
-                onClick={() => setSelectedListingId(listing.id)}
-              >
-                <h3>{listing.title}</h3>
-                <p>
-                  Prodejce: <strong>{listing.seller?.name}</strong> ({listing.seller?.email})
-                </p>
-                <div className="row">
-                  <span>{formatPrice(listing.price)}</span>
-                  <span>{listing.paymentMethods.join(' · ')}</span>
-                </div>
-              </article>
-            ))}
-          </div>
-
-          <button className="primary" onClick={createTransaction}>
-            Vytvořit escrow transakci
-          </button>
-
-          <p className="hint">Escrow transakce: {transactions.length}</p>
-        </section>
-      )}
-
-
-      {tab === 'admin' && (
-        <section className="panel">
-          <div className="adminTopActions">
-            <button className="primary" onClick={seedAllStatuses}>Seed všech stavů</button>
-            <button className="ghost" onClick={clearAllTransactions}>Reset test dat</button>
-          </div>
-
-          <h2>Admin rozhraní</h2>
-
-          <h3>Všechny transakce ({transactions.length})</h3>
-          <div className="tableWrap">
-            <table>
-              <thead>
-                <tr>
-                  <th>ID</th>
-                  <th>Stav</th>
-                  <th>Kupující</th>
-                  <th>Prodávající</th>
-                  <th>Částka</th>
-                  <th>Aktualizace</th>
-                </tr>
-              </thead>
-              <tbody>
-                {transactions.map((tx) => (
-                  <tr key={`all-${tx.id}`}>
-                    <td>{tx.id}</td>
-                    <td>
-                      <span className={`status ${tx.status}`}>{statusLabel[tx.status]}</span>
-                    </td>
-                    <td>{tx.buyerEmail}</td>
-                    <td>{tx.sellerEmail}</td>
-                    <td>{formatPrice(tx.amount)}</td>
-                    <td>{tx.updatedAt}</td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
-
-          <div className="groupWrap">
-            <div className="group">
-              <h3>K řešení ({groups.resolve.length})</h3>
-              {groups.resolve.map((tx) => (
-                <TxCard
-                  key={tx.id}
-                  tx={tx}
-                  note={statusNote[tx.id] || ''}
-                  change={statusChange[tx.id] || ''}
-                  onNote={(v) => setStatusNote((p) => ({ ...p, [tx.id]: v }))}
-                  onChange={(v) => setStatusChange((p) => ({ ...p, [tx.id]: v }))}
-                  onApply={() => applyStatusChange(tx.id)}
-                />
-              ))}
-            </div>
-
-            <div className="group">
-              <h3>V procesu ({groups.processing.length})</h3>
-              {groups.processing.map((tx) => (
-                <TxCard
-                  key={tx.id}
-                  tx={tx}
-                  note={statusNote[tx.id] || ''}
-                  change={statusChange[tx.id] || ''}
-                  onNote={(v) => setStatusNote((p) => ({ ...p, [tx.id]: v }))}
-                  onChange={(v) => setStatusChange((p) => ({ ...p, [tx.id]: v }))}
-                  onApply={() => applyStatusChange(tx.id)}
-                />
-              ))}
-            </div>
-
-            <div className="group">
-              <h3>Ukončeno ({groups.closed.length})</h3>
-              {groups.closed.map((tx) => (
-                <TxCard
-                  key={tx.id}
-                  tx={tx}
-                  note={statusNote[tx.id] || ''}
-                  change={statusChange[tx.id] || ''}
-                  onNote={(v) => setStatusNote((p) => ({ ...p, [tx.id]: v }))}
-                  onChange={(v) => setStatusChange((p) => ({ ...p, [tx.id]: v }))}
-                  onApply={() => applyStatusChange(tx.id)}
-                />
-              ))}
-            </div>
-          </div>
-        </section>
-      )}
-
-      {tab === 'emails' && (
-        <section className="panel">
-          <h2>Email logy ({emailLogs.length})</h2>
-          <div className="tableWrap">
-            <table>
-              <thead>
-                <tr>
-                  <th>Čas</th>
-                  <th>Tx</th>
-                  <th>Template</th>
-                  <th>Komu</th>
-                  <th>Předmět</th>
-                  <th>Stav</th>
-                </tr>
-              </thead>
-              <tbody>
-                {emailLogs.map((log) => (
-                  <tr key={log.id}>
-                    <td>{log.createdAt}</td>
-                    <td>{log.transactionId}</td>
-                    <td>{log.templateKey}</td>
-                    <td>{log.toEmail}</td>
-                    <td>{log.subject}</td>
-                    <td>{log.status}</td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
-
-          <h3>Audit eventy ({events.length})</h3>
-          <div className="tableWrap">
-            <table>
-              <thead>
-                <tr>
-                  <th>Čas</th>
-                  <th>Tx</th>
-                  <th>Role</th>
-                  <th>Email</th>
-                  <th>Akce</th>
-                  <th>Přechod</th>
-                  <th>Poznámka</th>
-                </tr>
-              </thead>
-              <tbody>
-                {events.map((event) => (
-                  <tr key={event.id}>
-                    <td>{event.createdAt}</td>
-                    <td>{event.transactionId}</td>
-                    <td>{event.actorRole}</td>
-                    <td>{event.actorEmail}</td>
-                    <td>{event.action}</td>
-                    <td>
-                      {event.oldStatus} → {event.newStatus}
-                    </td>
-                    <td>{event.note || '-'}</td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
-        </section>
-      )}
-    </div>
-  )
-}
-
-function TxCard({
-  tx,
-  change,
-  note,
-  onChange,
-  onNote,
-  onApply,
-}: {
-  tx: Transaction
-  change: EscrowStatus | ''
-  note: string
-  onChange: (value: EscrowStatus | '') => void
-  onNote: (value: string) => void
-  onApply: () => void
-}) {
-  const nextOptions = allowedTransitions[tx.status]
-
-  return (
-    <article className="txCard">
-      <div className="txHead">
-        <strong>{tx.id}</strong>
-        <span className={`status ${tx.status}`}>{statusLabel[tx.status]}</span>
-      </div>
-
-      <p>
-        <strong>Kupující:</strong> {tx.buyerName} ({tx.buyerEmail})
-      </p>
-      <p>
-        <strong>Prodejce:</strong> {tx.sellerEmail}
-      </p>
-      <p>
-        <strong>Částka:</strong> {formatPrice(tx.amount)} · <strong>Provize:</strong> {formatPrice(tx.feeAmount)} ·{' '}
-        <strong>Výplata:</strong> {formatPrice(tx.payoutAmount)}
-      </p>
-
-      <div className="txActions">
-        <select value={change} onChange={(e) => onChange((e.target.value as EscrowStatus) || '')}>
-          <option value="">Zvol nový stav</option>
-          {nextOptions.map((status) => (
-            <option key={status} value={status}>
-              {statusLabel[status]}
-            </option>
+        <div className="listings">
+          {escrowListings.map((listing) => (
+            <article
+              key={listing.id}
+              className={`listing ${selectedListingId === listing.id ? 'active' : ''}`}
+              onClick={() => setSelectedListingId(listing.id)}
+            >
+              <h3>{listing.title}</h3>
+              <p>
+                Prodejce: <strong>{listing.sellerName}</strong> ({listing.sellerEmail})
+              </p>
+              <div className="row">
+                <span>{formatPrice(listing.price)}</span>
+                <span>{listing.paymentMethods.join(' · ')}</span>
+              </div>
+            </article>
           ))}
-        </select>
-        <input
-          value={note}
-          onChange={(e) => onNote(e.target.value)}
-          placeholder="Důvod/poznámka (povinné pro hold/spor)"
-        />
-        <button className="primary" disabled={!change} onClick={onApply}>
-          Potvrdit změnu
+        </div>
+
+        <button className="primary" onClick={createOrderWithEscrow}>
+          Vytvořit objednávku + zavolat Depozitku
         </button>
-      </div>
-    </article>
+      </section>
+
+      <section className="panel">
+        <h2>Objednávky v bazaru ({orders.length})</h2>
+        <div className="tableWrap">
+          <table>
+            <thead>
+              <tr>
+                <th>Order ID</th>
+                <th>Depozitka Tx</th>
+                <th>Kupující</th>
+                <th>Prodávající</th>
+                <th>Částka</th>
+                <th>Stav</th>
+                <th>Čas</th>
+              </tr>
+            </thead>
+            <tbody>
+              {orders.map((order) => (
+                <tr key={order.id}>
+                  <td>{order.id}</td>
+                  <td>{order.depozitkaTxId}</td>
+                  <td>{order.buyerEmail}</td>
+                  <td>{order.sellerEmail}</td>
+                  <td>{formatPrice(order.amount)}</td>
+                  <td>{order.status}</td>
+                  <td>{order.createdAt}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      </section>
+
+      <section className="panel">
+        <h2>Konektor logy (marketplace → Depozitka)</h2>
+        <div className="logs">
+          {connectorLogs.length === 0 && <p>Zatím bez volání API.</p>}
+          {connectorLogs.map((line, i) => (
+            <pre key={`${line}-${i}`}>{line}</pre>
+          ))}
+        </div>
+      </section>
+    </div>
   )
 }
 
