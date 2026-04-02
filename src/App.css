@@ -1,0 +1,253 @@
+.app {
+  max-width: 1180px;
+  margin: 0 auto;
+  padding: 24px;
+  color: #0f172a;
+}
+
+.topbar {
+  margin-bottom: 20px;
+}
+
+.topbar h1 {
+  margin: 0 0 6px;
+  font-size: 32px;
+}
+
+.topbar p {
+  margin: 0;
+  color: #475569;
+}
+
+.layout {
+  display: grid;
+  grid-template-columns: 1.1fr 0.9fr;
+  gap: 16px;
+}
+
+.panel {
+  background: #ffffff;
+  border: 1px solid #e2e8f0;
+  border-radius: 14px;
+  padding: 16px;
+}
+
+.panel h2 {
+  margin-top: 0;
+  margin-bottom: 12px;
+  font-size: 20px;
+}
+
+.panelHead {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  margin-bottom: 10px;
+}
+
+.panelHead select {
+  padding: 8px 10px;
+  border-radius: 8px;
+  border: 1px solid #cbd5e1;
+}
+
+.listings {
+  display: grid;
+  gap: 10px;
+}
+
+.listing {
+  border: 1px solid #e2e8f0;
+  border-radius: 12px;
+  padding: 12px;
+  display: grid;
+  gap: 8px;
+  cursor: pointer;
+  transition: all 0.15s ease;
+}
+
+.listing:hover {
+  border-color: #93c5fd;
+  background: #f8fbff;
+}
+
+.listing.active {
+  border-color: #3b82f6;
+  background: #eff6ff;
+}
+
+.listing h3 {
+  margin: 0 0 4px;
+  font-size: 16px;
+}
+
+.listing p {
+  margin: 0;
+  color: #475569;
+  font-size: 14px;
+}
+
+.chips {
+  display: flex;
+  gap: 6px;
+  flex-wrap: wrap;
+  margin-top: 8px;
+}
+
+.chip {
+  font-size: 12px;
+  border-radius: 999px;
+  padding: 3px 8px;
+  background: #e2e8f0;
+  color: #334155;
+}
+
+.chip.escrow {
+  background: #dcfce7;
+  color: #166534;
+}
+
+.warn {
+  color: #b91c1c;
+  font-size: 12px;
+}
+
+.createBox {
+  display: grid;
+  gap: 12px;
+}
+
+label {
+  display: grid;
+  gap: 6px;
+  font-weight: 600;
+  font-size: 14px;
+}
+
+input {
+  border: 1px solid #cbd5e1;
+  border-radius: 10px;
+  padding: 10px 12px;
+  font-size: 14px;
+}
+
+.summary {
+  border: 1px dashed #cbd5e1;
+  border-radius: 10px;
+  padding: 10px;
+  background: #f8fafc;
+}
+
+.summary p {
+  margin: 5px 0;
+}
+
+button {
+  border: none;
+  border-radius: 10px;
+  padding: 10px 14px;
+  background: #2563eb;
+  color: white;
+  font-weight: 700;
+  cursor: pointer;
+}
+
+button:hover {
+  background: #1d4ed8;
+}
+
+button:disabled {
+  background: #94a3b8;
+  cursor: not-allowed;
+}
+
+.transactions {
+  margin-top: 16px;
+  overflow: auto;
+}
+
+table {
+  width: 100%;
+  border-collapse: collapse;
+  min-width: 920px;
+}
+
+th,
+td {
+  text-align: left;
+  border-bottom: 1px solid #e2e8f0;
+  padding: 10px 8px;
+  font-size: 14px;
+  vertical-align: middle;
+}
+
+.status {
+  font-weight: 700;
+  font-size: 12px;
+  border-radius: 999px;
+  padding: 4px 8px;
+  display: inline-block;
+}
+
+.status.created {
+  background: #e2e8f0;
+  color: #334155;
+}
+
+.status.paid {
+  background: #dbeafe;
+  color: #1e40af;
+}
+
+.status.shipped {
+  background: #fef3c7;
+  color: #92400e;
+}
+
+.status.delivered {
+  background: #ede9fe;
+  color: #5b21b6;
+}
+
+.status.completed {
+  background: #dcfce7;
+  color: #166534;
+}
+
+.status.disputed {
+  background: #fee2e2;
+  color: #991b1b;
+}
+
+.actions {
+  display: flex;
+  gap: 8px;
+}
+
+.actions button {
+  padding: 7px 10px;
+  font-size: 12px;
+}
+
+.actions .danger {
+  background: #dc2626;
+}
+
+.actions .danger:hover {
+  background: #b91c1c;
+}
+
+.empty {
+  color: #64748b;
+}
+
+@media (max-width: 940px) {
+  .app {
+    padding: 12px;
+  }
+
+  .layout {
+    grid-template-columns: 1fr;
+  }
+}
