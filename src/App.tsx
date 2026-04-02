@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import type { AuthChangeEvent, Session, RealtimePostgresChangesPayload } from '@supabase/supabase-js'
 import './App.css'
-import { supabase } from './lib/supabase'
+import { supabase, isMissingConfig } from './lib/supabase'
 
 /* ------------------------------------------------------------------ */
 /* Types                                                               */
@@ -351,6 +351,17 @@ function App() {
   }
 
   // ---- Render ----
+  if (isMissingConfig) {
+    return (
+      <div className="app">
+        <header className="topbar">
+          <h1>🛒 Test Bazar</h1>
+          <p>⚠️ Chybí <code>VITE_SUPABASE_URL</code> nebo <code>VITE_SUPABASE_ANON_KEY</code> — nastav je ve Vercel Environment Variables a redeployni.</p>
+        </header>
+      </div>
+    )
+  }
+
   return (
     <div className="app">
       <header className="topbar">
