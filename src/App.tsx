@@ -1,11 +1,7 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
-import type { AuthChangeEvent, Session, RealtimePostgresChangesPayload } from '@supabase/supabase-js'
+import type { AuthChangeEvent, Session } from '@supabase/supabase-js'
 import './App.css'
-import { supabase, isMissingConfig } from './lib/supabase'
-
-/* ------------------------------------------------------------------ */
-/* Types                                                               */
-/* ------------------------------------------------------------------ */
+import { isMissingConfig, supabase } from './lib/supabase'
 
 type PaymentMethod = 'Escrow' | 'Převod' | 'Dobírka'
 
@@ -27,60 +23,36 @@ type EscrowStatus =
 interface Listing {
   id: string
   title: string
-  price: number
+  priceCzk: number
   sellerName: string
   sellerEmail: string
   paymentMethods: PaymentMethod[]
+  isActive: boolean
 }
 
 interface MarketplaceOrder {
   id: string
+  externalOrderId: string
   listingId: string
   listingTitle: string
   buyerName: string
   buyerEmail: string
   sellerName: string
   sellerEmail: string
-  amount: number
+  amountCzk: number
+  paymentMethod: PaymentMethod
   localStatus: string
-  depozitkaTxCode: string
-  depozitkaStatus: EscrowStatus
+  escrowStatus: EscrowStatus
+  escrowTransactionCode: string
   createdAt: string
   updatedAt: string
 }
 
-/* ------------------------------------------------------------------ */
-/* Constants                                                           */
-/* ------------------------------------------------------------------ */
+interface CreateTxResponse {
+  transaction_code: string
+}
 
 const MARKETPLACE_CODE = 'depozitka-test-bazar'
-
-const listingsSeed: Listing[] = [
-  {
-    id: 'l-1001',
-    title: 'Tillig 74806 – nákladní vůz H0',
-    price: 890,
-    sellerName: 'Kolejmaster',
-    sellerEmail: 'seller1@test.cz',
-    paymentMethods: ['Escrow', 'Převod'],
-  },
-  {
-    id: 'l-1002',
-    title: 'Piko SmartControl set + trafo',
-    price: 3490,
-    sellerName: 'LokoTom',
-    sellerEmail: 'seller2@test.cz',
-    paymentMethods: ['Escrow', 'Dobírka'],
-  },
-  {
-    id: 'l-1003',
-    title: 'Modelová budova nádraží',
-    price: 1250,
-    sellerName: 'ModelKing',
-    sellerEmail: 'seller3@test.cz',
-    paymentMethods: ['Převod', 'Dobírka'],
-  },
-]
 
 const statusLabel: Record<EscrowStatus, string> = {
   created: 'Vytvořeno',
@@ -98,8 +70,7 @@ const statusLabel: Record<EscrowStatus, string> = {
   payout_confirmed: 'Výplata potvrzena',
 }
 
-/** Map Depozitka escrow status → marketplace-level status label */
-function marketplaceStatus(depStatus: EscrowStatus): string {
+function mapEscrowToMarketplaceStatus(depStatus: EscrowStatus): string {
   switch (depStatus) {
     case 'created':
     case 'partial_paid':
@@ -126,143 +97,163 @@ function marketplaceStatus(depStatus: EscrowStatus): string {
   }
 }
 
-function formatPrice(value: number) {
+function formatPrice(value: number): string {
   return `${new Intl.NumberFormat('cs-CZ').format(value)} Kč`
 }
 
-function formatDate(value: string) {
+function formatDate(value: string): string {
   return new Date(value).toLocaleString('cs-CZ')
 }
 
-function generateOrderId() {
-  return `ORD-${new Date().getFullYear()}-${Math.floor(1000 + Math.random() * 9000)}`
+function generateOrderId(): string {
+  return `TB-${new Date().getFullYear()}-${Math.floor(100000 + Math.random() * 900000)}`
 }
 
-/* ------------------------------------------------------------------ */
-/* App                                                                 */
-/* ------------------------------------------------------------------ */
+function parsePaymentMethods(value: unknown): PaymentMethod[] {
+  if (!Array.isArray(value)) return ['Escrow']
+
+  const allowed: PaymentMethod[] = ['Escrow', 'Převod', 'Dobírka']
+  const normalized = value.filter((item): item is PaymentMethod =>
+    typeof item === 'string' ? (allowed as string[]).includes(item) : false,
+  )
+
+  return normalized.length ? normalized : ['Escrow']
+}
 
 function App() {
-  // Auth
   const [sessionEmail, setSessionEmail] = useState('')
   const [password, setPassword] = useState('')
   const [isAuthed, setIsAuthed] = useState(false)
   const [busy, setBusy] = useState(false)
 
-  // Marketplace
-  const [listings] = useState(listingsSeed)
+  const [listings, setListings] = useState<Listing[]>([])
+  const [orders, setOrders] = useState<MarketplaceOrder[]>([])
+  const [selectedListingId, setSelectedListingId] = useState<string>('')
+
   const [buyerName, setBuyerName] = useState('Testující kupující')
   const [buyerEmail, setBuyerEmail] = useState('buyer@test.cz')
-  const [selectedListingId, setSelectedListingId] = useState(listingsSeed[0].id)
-  const [orders, setOrders] = useState<MarketplaceOrder[]>([])
+
   const [connectorLogs, setConnectorLogs] = useState<string[]>([])
 
-  const selectedListing = listings.find((l) => l.id === selectedListingId)
   const escrowListings = useMemo(
-    () => listings.filter((l) => l.paymentMethods.includes('Escrow')),
+    () => listings.filter((item) => item.isActive && item.paymentMethods.includes('Escrow')),
     [listings],
   )
 
-  // ---- Auth lifecycle ----
+  const selectedListing = useMemo(
+    () => escrowListings.find((item) => item.id === selectedListingId),
+    [escrowListings, selectedListingId],
+  )
+
   useEffect(() => {
     supabase.auth.getSession().then(({ data }: { data: { session: Session | null } }) => {
       setSessionEmail(data.session?.user?.email || '')
       setIsAuthed(Boolean(data.session))
     })
+
     const {
       data: { subscription },
     } = supabase.auth.onAuthStateChange((_event: AuthChangeEvent, session: Session | null) => {
       setSessionEmail(session?.user?.email || '')
       setIsAuthed(Boolean(session))
     })
+
     return () => subscription.unsubscribe()
   }, [])
 
-  // ---- Fetch orders from Depozitka ----
-  const fetchOrders = useCallback(async () => {
-    setBusy(true)
+  function addLog(message: string): void {
     const ts = new Date().toLocaleString('cs-CZ')
+    setConnectorLogs((prev) => [`[${ts}] ${message}`, ...prev].slice(0, 200))
+  }
 
+  const loadListings = useCallback(async () => {
     const { data, error } = await supabase
-      .from('dpt_transactions')
-      .select(
-        'id, transaction_code, external_order_id, listing_id, listing_title, buyer_name, buyer_email, seller_name, seller_email, amount_czk, status, created_at, updated_at',
-      )
-      .eq('marketplace_code', MARKETPLACE_CODE)
+      .from('tb_listings')
+      .select('id, title, price_czk, seller_name, seller_email, payment_methods, is_active')
+      .eq('is_active', true)
       .order('created_at', { ascending: false })
       .limit(100)
 
-    setBusy(false)
-
     if (error) {
-      addLog(`[${ts}] ❌ GET dpt_transactions failed: ${error.message}`)
+      addLog(`❌ Načtení tb_listings selhalo: ${error.message}`)
       return
     }
 
-    interface TxRow {
-      id: string
-      transaction_code: string
-      external_order_id: string | null
-      listing_id: string | null
-      listing_title: string | null
-      buyer_name: string
-      buyer_email: string
-      seller_name: string
-      seller_email: string
-      amount_czk: number
-      status: EscrowStatus
-      created_at: string
-      updated_at: string
+    const mapped: Listing[] = (data || []).map((row) => ({
+      id: String(row.id),
+      title: String(row.title || ''),
+      priceCzk: Number(row.price_czk || 0),
+      sellerName: String(row.seller_name || ''),
+      sellerEmail: String(row.seller_email || ''),
+      paymentMethods: parsePaymentMethods(row.payment_methods),
+      isActive: Boolean(row.is_active),
+    }))
+
+    setListings(mapped)
+    if (!selectedListingId && mapped.length > 0) {
+      setSelectedListingId(mapped[0].id)
     }
 
-    const mapped: MarketplaceOrder[] = ((data || []) as TxRow[]).map((row) => ({
-      id: row.external_order_id || row.id,
-      listingId: row.listing_id || '-',
-      listingTitle: row.listing_title || '-',
-      buyerName: row.buyer_name,
-      buyerEmail: row.buyer_email,
-      sellerName: row.seller_name,
-      sellerEmail: row.seller_email,
-      amount: Number(row.amount_czk),
-      localStatus: marketplaceStatus(row.status),
-      depozitkaTxCode: row.transaction_code,
-      depozitkaStatus: row.status,
-      createdAt: row.created_at,
-      updatedAt: row.updated_at,
+    addLog(`✅ Načteno ${mapped.length} inzerátů z tb_listings`)
+  }, [selectedListingId])
+
+  const loadOrders = useCallback(async () => {
+    const { data, error } = await supabase
+      .from('tb_orders')
+      .select(
+        'id, external_order_id, listing_id, listing_title, buyer_name, buyer_email, seller_name, seller_email, amount_czk, payment_method, local_status, escrow_status, escrow_transaction_code, created_at, updated_at',
+      )
+      .order('created_at', { ascending: false })
+      .limit(200)
+
+    if (error) {
+      addLog(`❌ Načtení tb_orders selhalo: ${error.message}`)
+      return
+    }
+
+    const mapped: MarketplaceOrder[] = (data || []).map((row) => ({
+      id: String(row.id),
+      externalOrderId: String(row.external_order_id || ''),
+      listingId: String(row.listing_id || ''),
+      listingTitle: String(row.listing_title || ''),
+      buyerName: String(row.buyer_name || ''),
+      buyerEmail: String(row.buyer_email || ''),
+      sellerName: String(row.seller_name || ''),
+      sellerEmail: String(row.seller_email || ''),
+      amountCzk: Number(row.amount_czk || 0),
+      paymentMethod: (String(row.payment_method || 'Escrow') as PaymentMethod),
+      localStatus: String(row.local_status || 'Neznámý stav'),
+      escrowStatus: String(row.escrow_status || 'created') as EscrowStatus,
+      escrowTransactionCode: String(row.escrow_transaction_code || ''),
+      createdAt: String(row.created_at || ''),
+      updatedAt: String(row.updated_at || ''),
     }))
 
     setOrders(mapped)
-    addLog(`[${ts}] ✅ GET dpt_transactions → ${mapped.length} objednávek načteno`)
+    addLog(`✅ Načteno ${mapped.length} objednávek z tb_orders`)
   }, [])
 
-  // Fetch on auth
   useEffect(() => {
-    if (isAuthed) void fetchOrders()
-  }, [isAuthed, fetchOrders])
+    if (!isAuthed) return
 
-  // ---- Realtime subscription ----
+    void loadListings()
+    void loadOrders()
+  }, [isAuthed, loadListings, loadOrders])
+
   useEffect(() => {
     if (!isAuthed) return
 
     const channel = supabase
-      .channel('bazar-tx-changes')
+      .channel('tb-orders-changes')
       .on(
         'postgres_changes',
         {
           event: '*',
           schema: 'public',
-          table: 'dpt_transactions',
-          filter: `marketplace_code=eq.${MARKETPLACE_CODE}`,
+          table: 'tb_orders',
         },
-        (payload: RealtimePostgresChangesPayload<Record<string, unknown>>) => {
-          const ts = new Date().toLocaleString('cs-CZ')
-          const rec = payload.new as Record<string, unknown> | undefined
-          if (rec) {
-            addLog(
-              `[${ts}] 🔔 Realtime: ${payload.eventType} tx=${rec['transaction_code'] || rec['id']} → status=${rec['status']}`,
-            )
-          }
-          void fetchOrders()
+        () => {
+          void loadOrders()
         },
       )
       .subscribe()
@@ -270,40 +261,38 @@ function App() {
     return () => {
       void supabase.removeChannel(channel)
     }
-  }, [isAuthed, fetchOrders])
+  }, [isAuthed, loadOrders])
 
-  // ---- Helpers ----
-  function addLog(line: string) {
-    setConnectorLogs((prev) => [line, ...prev].slice(0, 200))
-  }
-
-  async function signIn() {
+  async function signIn(): Promise<void> {
     if (!sessionEmail || !password) {
       alert('Vyplň email a heslo')
       return
     }
+
     setBusy(true)
     const { error } = await supabase.auth.signInWithPassword({
       email: sessionEmail,
       password,
     })
     setBusy(false)
+
     if (error) {
       alert(`Login chyba: ${error.message}`)
+      return
     }
+
+    addLog('✅ Přihlášení OK')
   }
 
-  async function signOut() {
+  async function signOut(): Promise<void> {
     await supabase.auth.signOut()
     setOrders([])
     setConnectorLogs([])
   }
 
-  // ---- Create order via Depozitka RPC ----
-  async function createOrderWithEscrow() {
-    if (!selectedListing) return
-    if (!selectedListing.paymentMethods.includes('Escrow')) {
-      alert('Tenhle inzerát nemá Escrow')
+  async function createOrderWithEscrow(): Promise<void> {
+    if (!selectedListing) {
+      alert('Vyber inzerát')
       return
     }
     if (!buyerName.trim() || !buyerEmail.trim()) {
@@ -311,52 +300,86 @@ function App() {
       return
     }
 
-    const orderId = generateOrderId()
-    const ts = new Date().toLocaleString('cs-CZ')
-
-    addLog(
-      `[${ts}] → POST dpt_create_transaction (order=${orderId}, listing=${selectedListing.id}, amount=${selectedListing.price})`,
-    )
+    const externalOrderId = generateOrderId()
 
     setBusy(true)
-    const { data, error } = await supabase.rpc('dpt_create_transaction', {
+    addLog(`→ Vytvářím escrow transakci (${externalOrderId})`)
+
+    const txRes = await supabase.rpc('dpt_create_transaction', {
       p_marketplace_code: MARKETPLACE_CODE,
-      p_external_order_id: orderId,
+      p_external_order_id: externalOrderId,
       p_listing_id: selectedListing.id,
       p_listing_title: selectedListing.title,
       p_buyer_name: buyerName.trim(),
       p_buyer_email: buyerEmail.trim(),
       p_seller_name: selectedListing.sellerName,
       p_seller_email: selectedListing.sellerEmail,
-      p_amount_czk: selectedListing.price,
+      p_amount_czk: selectedListing.priceCzk,
       p_payment_method: 'escrow',
-      p_metadata: { source: MARKETPLACE_CODE },
+      p_metadata: {
+        source: MARKETPLACE_CODE,
+        connector: 'tb-client',
+      },
     })
-    setBusy(false)
 
-    const ts2 = new Date().toLocaleString('cs-CZ')
-
-    if (error) {
-      addLog(`[${ts2}] ❌ dpt_create_transaction failed: ${error.message}`)
-      alert(`Vytvoření transakce selhalo: ${error.message}`)
+    if (txRes.error) {
+      setBusy(false)
+      addLog(`❌ dpt_create_transaction selhalo: ${txRes.error.message}`)
+      alert(`Vytvoření escrow transakce selhalo: ${txRes.error.message}`)
       return
     }
 
-    addLog(
-      `[${ts2}] ✅ dpt_create_transaction → tx_code=${(data as Record<string, string>)?.transaction_code || 'ok'}`,
-    )
+    const txData = txRes.data as CreateTxResponse | null
+    const txCode = txData?.transaction_code
 
-    // Refresh orders from Depozitka
-    await fetchOrders()
+    if (!txCode) {
+      setBusy(false)
+      addLog('❌ dpt_create_transaction vrátilo prázdnou odpověď')
+      alert('Escrow transakce nemá transaction_code')
+      return
+    }
+
+    addLog(`✅ Escrow vytvořeno: ${txCode}`)
+
+    const insertRes = await supabase.from('tb_orders').insert({
+      external_order_id: externalOrderId,
+      listing_id: selectedListing.id,
+      listing_title: selectedListing.title,
+      buyer_name: buyerName.trim(),
+      buyer_email: buyerEmail.trim().toLowerCase(),
+      seller_name: selectedListing.sellerName,
+      seller_email: selectedListing.sellerEmail.toLowerCase(),
+      amount_czk: selectedListing.priceCzk,
+      payment_method: 'Escrow',
+      local_status: mapEscrowToMarketplaceStatus('created'),
+      escrow_status: 'created',
+      escrow_transaction_code: txCode,
+      metadata: {
+        marketplace_code: MARKETPLACE_CODE,
+      },
+    })
+
+    setBusy(false)
+
+    if (insertRes.error) {
+      addLog(`❌ Uložení do tb_orders selhalo: ${insertRes.error.message}`)
+      alert(`Objednávka vznikla v Depozitce, ale neuložila se do tb_orders: ${insertRes.error.message}`)
+      return
+    }
+
+    addLog(`✅ Objednávka ${externalOrderId} uložená do tb_orders`)
+    await loadOrders()
   }
 
-  // ---- Render ----
   if (isMissingConfig) {
     return (
       <div className="app">
         <header className="topbar">
           <h1>🛒 Test Bazar</h1>
-          <p>⚠️ Chybí <code>VITE_SUPABASE_URL</code> nebo <code>VITE_SUPABASE_ANON_KEY</code> — nastav je ve Vercel Environment Variables a redeployni.</p>
+          <p>
+            ⚠️ Chybí <code>VITE_SUPABASE_URL</code> nebo <code>VITE_SUPABASE_ANON_KEY</code>.
+            Nastav je ve Vercelu a redeployni aplikaci.
+          </p>
         </header>
       </div>
     )
@@ -365,36 +388,28 @@ function App() {
   return (
     <div className="app">
       <header className="topbar">
-        <h1>🛒 Test Bazar</h1>
+        <h1>🛒 Depozitka Test Bazar</h1>
         <p>
-          Marketplace klient propojený s <strong>Depozitkou</strong> — stavy se synchronizují z{' '}
-          <code>dpt_transactions</code> v reálném čase.
+          Varianta <strong>2</strong>: stejná Supabase jako Depozitka, ale vlastní tabulky
+          <code> tb_*</code>. Escrow transakce se vytváří přes <code>dpt_create_transaction</code>.
         </p>
       </header>
 
       {!isAuthed ? (
         <section className="panel">
           <h2>Přihlášení</h2>
-          <p className="hint">Přihlas se stejným účtem jako v Depozitka Core.</p>
+          <p className="hint">Přihlas se účtem ze stejné Supabase instance.</p>
           <div className="formGrid">
             <label>
               Email
-              <input
-                type="email"
-                value={sessionEmail}
-                onChange={(e) => setSessionEmail(e.target.value)}
-              />
+              <input type="email" value={sessionEmail} onChange={(e) => setSessionEmail(e.target.value)} />
             </label>
             <label>
               Heslo
-              <input
-                type="password"
-                value={password}
-                onChange={(e) => setPassword(e.target.value)}
-              />
+              <input type="password" value={password} onChange={(e) => setPassword(e.target.value)} />
             </label>
           </div>
-          <button className="primary" disabled={busy} onClick={signIn}>
+          <button className="primary" disabled={busy} onClick={() => void signIn()}>
             {busy ? 'Přihlašuji…' : 'Přihlásit'}
           </button>
         </section>
@@ -404,8 +419,11 @@ function App() {
             <div className="adminTopActions">
               <strong>Přihlášen: {sessionEmail}</strong>
               <div style={{ display: 'flex', gap: 8 }}>
-                <button className="ghost" onClick={() => void fetchOrders()} disabled={busy}>
-                  🔄 Obnovit stavy
+                <button className="ghost" onClick={() => void loadListings()} disabled={busy}>
+                  Obnovit inzeráty
+                </button>
+                <button className="ghost" onClick={() => void loadOrders()} disabled={busy}>
+                  Obnovit objednávky
                 </button>
                 <button className="ghost" onClick={() => void signOut()} disabled={busy}>
                   Odhlásit
@@ -415,14 +433,12 @@ function App() {
           </section>
 
           <div className="syncBanner">
-            🔗 Tento bazar je propojený s <strong>Depozitkou</strong> — objednávky + stavy se
-            čtou živě z <code>dpt_transactions</code>. Změň stav v Depozitka Core → tady se
-            automaticky aktualizuje.
+            🔗 Marketplace data jsou v <code>tb_listings</code> + <code>tb_orders</code>. Escrow běží v
+            Depozitce (<code>dpt_*</code>) a synchronizuje se přes transaction code.
           </div>
 
-          {/* Create order */}
           <section className="panel">
-            <h2>Nová objednávka s Escrow</h2>
+            <h2>Nová objednávka</h2>
 
             <div className="formGrid">
               <label>
@@ -431,15 +447,15 @@ function App() {
               </label>
               <label>
                 Kupující (email)
-                <input
-                  type="email"
-                  value={buyerEmail}
-                  onChange={(e) => setBuyerEmail(e.target.value)}
-                />
+                <input type="email" value={buyerEmail} onChange={(e) => setBuyerEmail(e.target.value)} />
               </label>
             </div>
 
             <div className="listings">
+              {escrowListings.length === 0 && (
+                <p className="hint">Žádné aktivní escrow inzeráty. Spusť SQL seed pro tb_listings.</p>
+              )}
+
               {escrowListings.map((listing) => (
                 <article
                   key={listing.id}
@@ -451,27 +467,22 @@ function App() {
                     Prodejce: <strong>{listing.sellerName}</strong> ({listing.sellerEmail})
                   </p>
                   <div className="row">
-                    <span>{formatPrice(listing.price)}</span>
+                    <span>{formatPrice(listing.priceCzk)}</span>
                     <span>{listing.paymentMethods.join(' · ')}</span>
                   </div>
                 </article>
               ))}
             </div>
 
-            <button
-              className="primary"
-              onClick={() => void createOrderWithEscrow()}
-              disabled={busy}
-            >
+            <button className="primary" onClick={() => void createOrderWithEscrow()} disabled={busy || !selectedListing}>
               {busy ? 'Vytvářím…' : 'Vytvořit objednávku → Depozitka'}
             </button>
           </section>
 
-          {/* Orders table */}
           <section className="panel">
             <h2>Objednávky ({orders.length})</h2>
             {orders.length === 0 ? (
-              <p className="hint">Zatím žádné objednávky. Vytvoř první výše ☝️</p>
+              <p className="hint">Zatím žádné objednávky.</p>
             ) : (
               <div className="tableWrap">
                 <table>
@@ -484,17 +495,17 @@ function App() {
                       <th>Prodávající</th>
                       <th>Částka</th>
                       <th>Stav v bazaru</th>
-                      <th>Depozitka stav</th>
+                      <th>Escrow stav</th>
                       <th>Aktualizováno</th>
                     </tr>
                   </thead>
                   <tbody>
                     {orders.map((order) => (
-                      <tr key={order.depozitkaTxCode}>
-                        <td>{order.id}</td>
+                      <tr key={order.id}>
+                        <td>{order.externalOrderId}</td>
                         <td>{order.listingTitle}</td>
                         <td>
-                          <code>{order.depozitkaTxCode}</code>
+                          <code>{order.escrowTransactionCode}</code>
                         </td>
                         <td>
                           {order.buyerName}
@@ -506,12 +517,10 @@ function App() {
                           <br />
                           <small>{order.sellerEmail}</small>
                         </td>
-                        <td>{formatPrice(order.amount)}</td>
+                        <td>{formatPrice(order.amountCzk)}</td>
                         <td>{order.localStatus}</td>
                         <td>
-                          <span className={`status ${order.depozitkaStatus}`}>
-                            {statusLabel[order.depozitkaStatus]}
-                          </span>
+                          <span className={`status ${order.escrowStatus}`}>{statusLabel[order.escrowStatus]}</span>
                         </td>
                         <td>{formatDate(order.updatedAt)}</td>
                       </tr>
@@ -522,13 +531,12 @@ function App() {
             )}
           </section>
 
-          {/* Connector logs */}
           <section className="panel">
-            <h2>Konektor logy (Bazar ↔ Depozitka)</h2>
+            <h2>Konektor logy</h2>
             <div className="logs">
-              {connectorLogs.length === 0 && <p className="hint">Zatím bez volání API.</p>}
-              {connectorLogs.map((line, i) => (
-                <pre key={`${i}-${line.slice(0, 30)}`}>{line}</pre>
+              {connectorLogs.length === 0 && <p className="hint">Zatím bez logů.</p>}
+              {connectorLogs.map((line, idx) => (
+                <pre key={`${idx}-${line.slice(0, 20)}`}>{line}</pre>
               ))}
             </div>
           </section>
