@@ -49,10 +49,14 @@ interface MarketplaceOrder {
 }
 
 interface CreateTxResponse {
-  transaction_code: string
+  transaction_code?: string
 }
 
 const MARKETPLACE_CODE = 'depozitka-test-bazar'
+
+function generateRequestId(): string {
+  return `req_${Date.now()}_${Math.random().toString(36).slice(2, 10)}`
+}
 
 const statusLabel: Record<EscrowStatus, string> = {
   created: 'Vytvořeno',
@@ -132,6 +136,7 @@ function App() {
 
   const [buyerName, setBuyerName] = useState('Testující kupující')
   const [buyerEmail, setBuyerEmail] = useState('buyer@test.cz')
+  const [marketplaceApiKey, setMarketplaceApiKey] = useState('')
 
   const [connectorLogs, setConnectorLogs] = useState<string[]>([])
 
@@ -299,14 +304,21 @@ function App() {
       alert('Vyplň jméno a email kupujícího')
       return
     }
+    if (!marketplaceApiKey.trim()) {
+      alert('Vyplň Marketplace API klíč')
+      return
+    }
 
     const externalOrderId = generateOrderId()
+    const requestId = generateRequestId()
 
     setBusy(true)
-    addLog(`→ Vytvářím escrow transakci (${externalOrderId})`)
+    addLog(`→ Vytvářím escrow transakci (${externalOrderId}) přes API kontrakt`)
 
-    const txRes = await supabase.rpc('dpt_create_transaction', {
+    const txRes = await supabase.rpc('dpt_create_transaction_safe', {
       p_marketplace_code: MARKETPLACE_CODE,
+      p_api_key: marketplaceApiKey.trim(),
+      p_request_id: requestId,
       p_external_order_id: externalOrderId,
       p_listing_id: selectedListing.id,
       p_listing_title: selectedListing.title,
@@ -324,7 +336,7 @@ function App() {
 
     if (txRes.error) {
       setBusy(false)
-      addLog(`❌ dpt_create_transaction selhalo: ${txRes.error.message}`)
+      addLog(`❌ dpt_create_transaction_safe selhalo: ${txRes.error.message}`)
       alert(`Vytvoření escrow transakce selhalo: ${txRes.error.message}`)
       return
     }
@@ -334,12 +346,12 @@ function App() {
 
     if (!txCode) {
       setBusy(false)
-      addLog('❌ dpt_create_transaction vrátilo prázdnou odpověď')
+      addLog('❌ dpt_create_transaction_safe vrátilo prázdnou odpověď')
       alert('Escrow transakce nemá transaction_code')
       return
     }
 
-    addLog(`✅ Escrow vytvořeno: ${txCode}`)
+    addLog(`✅ Escrow vytvořeno: ${txCode} (request_id=${requestId})`)
 
     const insertRes = await supabase.from('tb_orders').insert({
       external_order_id: externalOrderId,
@@ -391,7 +403,8 @@ function App() {
         <h1>🛒 Depozitka Test Bazar</h1>
         <p>
           Varianta <strong>2</strong>: stejná Supabase jako Depozitka, ale vlastní tabulky
-          <code> tb_*</code>. Escrow transakce se vytváří přes <code>dpt_create_transaction</code>.
+          <code> tb_*</code>. Escrow transakce se vytváří přes API kontrakt
+          <code> dpt_create_transaction_safe</code> (marketplace API key + idempotency).
         </p>
       </header>
 
@@ -448,6 +461,15 @@ function App() {
               <label>
                 Kupující (email)
                 <input type="email" value={buyerEmail} onChange={(e) => setBuyerEmail(e.target.value)} />
+              </label>
+              <label>
+                Marketplace API key (Depozitka)
+                <input
+                  type="password"
+                  value={marketplaceApiKey}
+                  onChange={(e) => setMarketplaceApiKey(e.target.value)}
+                  placeholder="dpt_live_..."
+                />
               </label>
             </div>
 
