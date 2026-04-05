@@ -136,7 +136,7 @@ function App() {
 
   const [buyerName, setBuyerName] = useState('Testující kupující')
   const [buyerEmail, setBuyerEmail] = useState('buyer@test.cz')
-  const [marketplaceApiKey, setMarketplaceApiKey] = useState('')
+  const [marketplaceApiKey, setMarketplaceApiKey] = useState(() => localStorage.getItem('tb-api-key') || '')
 
   const [connectorLogs, setConnectorLogs] = useState<string[]>([])
 
@@ -467,7 +467,11 @@ function App() {
                 <input
                   type="password"
                   value={marketplaceApiKey}
-                  onChange={(e) => setMarketplaceApiKey(e.target.value)}
+                  onChange={(e) => {
+                    const v = e.target.value
+                    setMarketplaceApiKey(v)
+                    localStorage.setItem('tb-api-key', v)
+                  }}
                   placeholder="dpt_live_..."
                 />
               </label>
